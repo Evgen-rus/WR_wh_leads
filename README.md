@@ -1,11 +1,12 @@
 # WR_wh_leads — краткая инструкция
 
-Проект принимает webhook и пишет входящие данные в лог.
+Проект принимает webhook, пишет лид в PostgreSQL и дублирует запись в лог.
 
-Сейчас сервер работает так:
+Текущая схема:
 - `nginx` принимает запросы на `http://wrmb-wh.webtm.ru`
-- `webhook_test.service` запускает `uvicorn` на `127.0.0.1:8000`
+- `wr_wh_leads.service` запускает `uvicorn app.main:app` на `127.0.0.1:8000`
 - endpoint для провайдера: `http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>`
+- лиды сохраняются в таблицу `provider_leads`
 
 ## 1) Если изменил код проекта (главные команды)
 
@@ -16,21 +17,25 @@ cd /opt/WR_wh_leads
 git pull
 source venv/bin/activate
 pip install -r requirements.txt
-systemctl restart webhook_test
-systemctl status webhook_test --no-pager
+systemctl restart wr_wh_leads
+systemctl status wr_wh_leads --no-pager
 ```
 
-Это основной рабочий сценарий после каждого изменения в репозитории.
-
-## 2) Быстрая проверка, что все работает
+## 2) Быстрая проверка
 
 ```bash
-systemctl status webhook_test --no-pager
+systemctl status wr_wh_leads --no-pager
 systemctl status nginx --no-pager
 ufw status
 ```
 
-Тестовый запрос:
+Проверка health:
+
+```bash
+curl http://wrmb-wh.webtm.ru/health
+```
+
+Проверка webhook:
 
 ```bash
 curl -X POST "http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>" \
@@ -41,21 +46,28 @@ curl -X POST "http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>" \
 Ожидаемый ответ:
 
 ```json
-{"ok":true}
+{"ok":true,"lead_id":123}
 ```
 
-## 3) Логи
+## 3) Логи и БД
 
-Логи приложения:
+Логи сервиса:
 
 ```bash
-journalctl -u webhook_test -f
+journalctl -u wr_wh_leads -f
 ```
 
 Webhook payload:
 
 ```bash
 tail -f /opt/WR_wh_leads/logs/provider_webhook.log
+```
+
+Проверка записей в БД:
+
+```bash
+psql "postgresql://wr_wh_leads:<PASSWORD>@127.0.0.1:5432/wr_wh_leads_prod" \
+  -c "select id, received_at, lead_uid, site from provider_leads order by id desc limit 20;"
 ```
 
 ## 4) Полезные команды
@@ -70,7 +82,7 @@ systemctl restart nginx
 Перезапуск только приложения:
 
 ```bash
-systemctl restart webhook_test
+systemctl restart wr_wh_leads
 ```
 
 ## 5) Что указывать у провайдера (API ссылка)
