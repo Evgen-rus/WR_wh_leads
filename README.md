@@ -7,6 +7,7 @@
 - `wr_wh_leads.service` запускает `uvicorn app.main:app` на `127.0.0.1:8000`
 - endpoint для провайдера: `http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>`
 - лиды сохраняются в таблицу `provider_leads`
+- письма отправляются отдельным воркером из БД на `TO_EMAIL`
 
 ## 1) Если изменил код проекта (главные команды)
 
@@ -57,6 +58,10 @@ curl -X POST "http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>" \
 journalctl -u wr_wh_leads -f
 ```
 
+В этом логе есть строки:
+- `Lead email sent: lead_id=...`
+- `Lead email failed: lead_id=...`
+
 Webhook payload:
 
 ```bash
@@ -92,3 +97,43 @@ http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>
 ```
 
 `<WEBHOOK_SECRET>` должен точно совпадать со значением `WEBHOOK_SECRET` в файле `.env`.
+
+## 6) Переменные для почты
+
+```env
+# Почта-отправитель (доверенная в Яндексе)
+YANDEX_EMAIL=your_email@yandex.ru
+# Пароль приложения Яндекс
+YANDEX_APP_PASSWORD=your_app_password
+# Почта получателя лидов
+TO_EMAIL=npp-rekord@yandex.ru
+SMTP_SERVER=smtp.yandex.com
+SMTP_PORT=465
+SMTP_TIMEOUT_SECONDS=20
+# Пауза между письмами (сек)
+EMAIL_SEND_DELAY_SECONDS=5
+# Максимум попыток отправки одного лида
+# 0 = временно отключить отправку писем
+EMAIL_MAX_ATTEMPTS=5
+# Как часто воркер проверяет новые pending-лиды
+EMAIL_POLL_INTERVAL_SECONDS=2
+EMAIL_TIMEZONE_LABEL=UTC +3
+```
+
+Временное отключение отправки писем:
+
+1. В `.env` поставить `EMAIL_MAX_ATTEMPTS=0`
+2. Перезапустить сервис:
+
+```bash
+systemctl restart wr_wh_leads
+```
+
+Обратное включение:
+
+1. Вернуть `EMAIL_MAX_ATTEMPTS=5`
+2. Перезапустить сервис:
+
+```bash
+systemctl restart wr_wh_leads
+```
