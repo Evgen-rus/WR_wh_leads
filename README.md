@@ -1,17 +1,19 @@
 # WR_wh_leads — краткая инструкция
 
-Проект принимает webhook, пишет лид в PostgreSQL и дублирует запись в лог.
+Проект принимает webhook-лиды, сохраняет их в PostgreSQL, отправляет уведомления на email и выгружает данные в Google Sheets.
 
-Текущая схема:
-- `nginx` принимает запросы на `http://wrmb-wh.webtm.ru`
-- `wr_wh_leads.service` запускает `uvicorn app.main:app` на `127.0.0.1:8000`
-- endpoint для провайдера: `http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>`
-- лиды сохраняются в таблицу `provider_leads`
-- письма отправляются отдельным воркером из БД на `TO_EMAIL`
+## Архитектура
 
-## 1) Если изменил код проекта (главные команды)
+- **nginx** принимает запросы на `http://wrmb-wh.webtm.ru`
+- **wr_wh_leads.service** запускает `uvicorn app.main:app` на `127.0.0.1:8000`
+- **Endpoint:** `POST http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>`
+- Лиды сохраняются в таблицу `provider_leads` (дедупликация по `lead_uid`)
+- Фоновый воркер отправляет письма на `TO_EMAIL` (claim-механика, ретраи)
+- Скрипт `export_leads_to_sheet.py` выгружает лиды в Google Sheets (cron каждые 20 мин)
 
-Выполнять на сервере:
+---
+
+## 1) Обновление кода на сервере
 
 ```bash
 cd /opt/WR_wh_leads
@@ -22,6 +24,8 @@ systemctl restart wr_wh_leads
 systemctl status wr_wh_leads --no-pager
 ```
 
+---
+
 ## 2) Быстрая проверка
 
 ```bash
@@ -30,7 +34,7 @@ systemctl status nginx --no-pager
 ufw status
 ```
 
-Проверка health:
+Health-check:
 
 ```bash
 curl http://wrmb-wh.webtm.ru/health
@@ -41,26 +45,30 @@ curl http://wrmb-wh.webtm.ru/health
 ```bash
 curl -X POST "http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>" \
   -H "Content-Type: application/json" \
-  -d '{"test":"ok"}'
+  -d '{"uuid":"test-123","site":"example.com"}'
 ```
 
 Ожидаемый ответ:
 
 ```json
-{"ok":true,"lead_id":123}
+{"ok":true,"lead_id":123,"lead_state":"new"}
 ```
+
+При повторной отправке с тем же `uuid`/`vid`:
+
+```json
+{"ok":true,"lead_id":123,"lead_state":"duplicate"}
+```
+
+---
 
 ## 3) Логи и БД
 
-Логи сервиса:
+Логи сервиса (включая отправку писем):
 
 ```bash
 journalctl -u wr_wh_leads -f
 ```
-
-В этом логе есть строки:
-- `Lead email sent: lead_id=...`
-- `Lead email failed: lead_id=...`
 
 Webhook payload:
 
@@ -68,72 +76,110 @@ Webhook payload:
 tail -f /opt/WR_wh_leads/logs/provider_webhook.log
 ```
 
-Проверка записей в БД:
+Выгрузка в Google Sheets:
 
 ```bash
-psql "postgresql://wr_wh_leads:<PASSWORD>@127.0.0.1:5432/wr_wh_leads_prod" \
-  -c "select id, received_at, lead_uid, site from provider_leads order by id desc limit 20;"
+tail -f /opt/WR_wh_leads/logs/export_leads_to_sheet.log
 ```
+
+Проверка БД (подготовить переменную один раз):
+
+```bash
+cd /opt/WR_wh_leads && source venv/bin/activate && set -a && source .env && set +a && export PSQL_DATABASE_URL="${DATABASE_URL/postgresql+psycopg/postgresql}"
+psql "$PSQL_DATABASE_URL" -c "SELECT email_status, COUNT(*) FROM provider_leads GROUP BY email_status;"
+```
+
+Подробные SQL-команды и re-drive failed-лидов — в `docs/команды_sql_и_ретраи_почты.md`.
+
+---
 
 ## 4) Полезные команды
 
-Перезапуск Nginx после правок конфига:
+Перезапуск Nginx:
 
 ```bash
 nginx -t
 systemctl restart nginx
 ```
 
-Перезапуск только приложения:
+Перезапуск приложения:
 
 ```bash
 systemctl restart wr_wh_leads
 ```
 
-## 5) Что указывать у провайдера (API ссылка)
+---
+
+## 5) API для провайдера
 
 ```text
 http://wrmb-wh.webtm.ru/api/provider-test/<WEBHOOK_SECRET>
 ```
 
-`<WEBHOOK_SECRET>` должен точно совпадать со значением `WEBHOOK_SECRET` в файле `.env`.
+`<WEBHOOK_SECRET>` должен совпадать с `WEBHOOK_SECRET` в `.env`.
 
-## 6) Переменные для почты
+---
 
-```env
-# Почта-отправитель (доверенная в Яндексе)
-YANDEX_EMAIL=your_email@yandex.ru
-# Пароль приложения Яндекс
-YANDEX_APP_PASSWORD=your_app_password
-# Почта получателя лидов
-TO_EMAIL=npp-rekord@yandex.ru
-SMTP_SERVER=smtp.yandex.com
-SMTP_PORT=465
-SMTP_TIMEOUT_SECONDS=20
-# Пауза между письмами (сек)
-EMAIL_SEND_DELAY_SECONDS=5
-# Максимум попыток отправки одного лида
-# 0 = временно отключить отправку писем
-EMAIL_MAX_ATTEMPTS=5
-# Как часто воркер проверяет новые pending-лиды
-EMAIL_POLL_INTERVAL_SECONDS=2
-EMAIL_TIMEZONE_LABEL=UTC +3
-```
+## 6) Переменные окружения
 
-Временное отключение отправки писем:
+Основные (см. `.env.example`):
 
-1. В `.env` поставить `EMAIL_MAX_ATTEMPTS=0`
-2. Перезапустить сервис:
+| Переменная | Описание |
+|------------|----------|
+| `DATABASE_URL` | PostgreSQL (формат `postgresql+psycopg://...`) |
+| `WEBHOOK_SECRET` | Секрет для webhook |
+| `YANDEX_EMAIL` | Почта-отправитель |
+| `YANDEX_APP_PASSWORD` | Пароль приложения Яндекса |
+| `TO_EMAIL` | Куда отправлять лиды |
+| `CITY_LEADS` | Город в письме (по умолчанию Moscow) |
+| `EMAIL_SEND_DELAY_SECONDS` | Пауза между письмами (рекомендуется 20–30 при rate limit) |
+| `EMAIL_MAX_ATTEMPTS` | Попыток на лид (0 = отключить отправку) |
+| `EMAIL_POLL_INTERVAL_SECONDS` | Интервал проверки очереди |
+| `GOOGLE_CREDENTIALS_FILE` | Путь к JSON сервисного аккаунта |
+| `GOOGLE_SHEET_ID` | ID таблицы для выгрузки лидов |
+| `EXPORT_LEADS_LOG_PATH` | Лог скрипта выгрузки |
+
+Временное отключение отправки писем: `EMAIL_MAX_ATTEMPTS=0` и `systemctl restart wr_wh_leads`.
+
+---
+
+## 7) Выгрузка в Google Sheets
+
+Скрипт `export_leads_to_sheet.py`:
+
+- Берёт лиды за последние 24 часа
+- Пишет в лист «Месяц Год» (например «Март 2026»)
+- Дедупликация по `lead_uid`, обновление статуса почты
+
+Запуск вручную:
 
 ```bash
-systemctl restart wr_wh_leads
+cd /opt/WR_wh_leads && source venv/bin/activate && python export_leads_to_sheet.py
 ```
 
-Обратное включение:
-
-1. Вернуть `EMAIL_MAX_ATTEMPTS=5`
-2. Перезапустить сервис:
+Cron (каждые 20 минут):
 
 ```bash
-systemctl restart wr_wh_leads
+*/20 * * * * cd /opt/WR_wh_leads && /usr/bin/flock -n /tmp/wr_wh_leads_export.lock /opt/WR_wh_leads/venv/bin/python /opt/WR_wh_leads/export_leads_to_sheet.py >/dev/null 2>&1
 ```
+
+---
+
+## 8) Утилиты
+
+| Файл | Назначение |
+|------|------------|
+| `send_test_email.py` | Ручная проверка SMTP |
+| `webhook_test.py` | Минимальный тестовый webhook-сервер |
+| `util_table_explorer.py` | Анализ структуры Google Sheets |
+
+---
+
+## 9) Документация
+
+| Файл | Содержание |
+|------|------------|
+| `docs/команды_sql_и_ретраи_почты.md` | SQL-команды, re-drive failed, мониторинг |
+| `docs/Лимиты_почты_решение.md` | Решения при 450 rate limit |
+| `docs/настройка нового сервера.md` | Деплой с нуля |
+| `docs/создание_БД.md` | Создание БД PostgreSQL |
