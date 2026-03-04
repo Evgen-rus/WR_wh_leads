@@ -23,14 +23,21 @@ async def provider_test(secret: str, request: Request) -> JSONResponse:
 
     payload, request_format = await read_request_payload(request)
     headers = dict(request.headers)
-    inserted_id = save_lead(
+    inserted_id, is_duplicate = save_lead(
         payload=payload if isinstance(payload, dict) else {"payload": payload},
         headers=headers,
         request_format=request_format,
     )
 
-    _log_lead(payload=payload, headers=headers, request_format=request_format, inserted_id=inserted_id)
-    return JSONResponse({"ok": True, "lead_id": inserted_id})
+    lead_state = "duplicate" if is_duplicate else "new"
+    _log_lead(
+        payload=payload,
+        headers=headers,
+        request_format=request_format,
+        inserted_id=inserted_id,
+        lead_state=lead_state,
+    )
+    return JSONResponse({"ok": True, "lead_id": inserted_id, "lead_state": lead_state})
 
 
 def _log_lead(
@@ -38,11 +45,13 @@ def _log_lead(
     headers: dict[str, Any],
     request_format: str,
     inserted_id: int,
+    lead_state: str,
 ) -> None:
     logger.info(
         json.dumps(
             {
                 "db_id": inserted_id,
+                "lead_state": lead_state,
                 "format": request_format,
                 "headers": headers,
                 "payload": payload,

@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from app.config import (
+    CITY_LEADS,
     EMAIL_TIMEZONE_LABEL,
     SMTP_PORT,
     SMTP_SERVER,
@@ -52,7 +53,7 @@ def _build_message_body(payload: dict[str, Any], received_at: Any) -> str:
     identification_time = _format_identification_time(payload, received_at)
     lead_marker = _first_non_empty(payload.get("vid"), payload.get("uuid"))
     name = f"Гость #{lead_marker}"
-    city = _as_text(payload.get("city"))
+    city = _as_text(CITY_LEADS)
     phone = _extract_first_phone(payload)
     page_url = _as_text(payload.get("page"))
 
@@ -101,7 +102,7 @@ def _extract_first_phone(payload: dict[str, Any]) -> str:
     phones = payload.get("phones")
     if isinstance(phones, list) and phones:
         return _as_text(phones[0])
-    return _as_text(payload.get("phone"))
+    return ""
 
 
 def _get_utm_value(payload: dict[str, Any], key: str) -> str:

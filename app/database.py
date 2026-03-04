@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import (
     JSON,
     Column,
@@ -13,7 +14,6 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
-    insert,
     select,
     text,
     update,
@@ -56,17 +56,42 @@ def ensure_database() -> None:
         "ALTER TABLE provider_leads ADD COLUMN IF NOT EXISTS email_last_error TEXT",
         "ALTER TABLE provider_leads ADD COLUMN IF NOT EXISTS email_sent_at TIMESTAMPTZ",
     ]
+    deduplicate_existing_lead_uids_sql = """
+    WITH ranked AS (
+        SELECT
+            id,
+            row_number() OVER (
+                PARTITION BY lead_uid
+                ORDER BY id ASC
+            ) AS rn
+        FROM provider_leads
+        WHERE lead_uid IS NOT NULL
+          AND lead_uid <> ''
+    )
+    UPDATE provider_leads AS pl
+    SET lead_uid = NULL
+    FROM ranked
+    WHERE pl.id = ranked.id
+      AND ranked.rn > 1
+    """
+    create_unique_index_sql = """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_provider_leads_lead_uid_not_empty
+    ON provider_leads (lead_uid)
+    WHERE lead_uid IS NOT NULL AND lead_uid <> ''
+    """
     with engine.begin() as connection:
         for stmt in alter_statements:
             connection.execute(text(stmt))
+        connection.execute(text(deduplicate_existing_lead_uids_sql))
+        connection.execute(text(create_unique_index_sql))
 
 
-def save_lead(payload: dict[str, Any], headers: dict[str, Any], request_format: str) -> int:
-    lead_uid = str(payload.get("uuid") or payload.get("vid") or "")
+def save_lead(payload: dict[str, Any], headers: dict[str, Any], request_format: str) -> tuple[int, bool]:
+    lead_uid = str(payload.get("uuid") or payload.get("vid") or "").strip()
     site = str(payload.get("site") or "")
 
     stmt = (
-        insert(provider_leads)
+        pg_insert(provider_leads)
         .values(
             lead_uid=lead_uid or None,
             site=site or None,
@@ -78,35 +103,75 @@ def save_lead(payload: dict[str, Any], headers: dict[str, Any], request_format: 
             email_last_error=None,
             email_sent_at=None,
         )
+        .on_conflict_do_nothing(
+            index_elements=[provider_leads.c.lead_uid],
+            index_where=text("lead_uid IS NOT NULL AND lead_uid <> ''"),
+        )
         .returning(provider_leads.c.id)
     )
 
     try:
         with engine.begin() as connection:
-            inserted_id = connection.execute(stmt).scalar_one()
+            inserted_id = connection.execute(stmt).scalar_one_or_none()
+            if inserted_id is not None:
+                return int(inserted_id), False
+            if not lead_uid:
+                raise RuntimeError("Lead insert returned no id for payload without lead_uid")
+            existing_id = connection.execute(
+                select(provider_leads.c.id)
+                .where(provider_leads.c.lead_uid == lead_uid)
+                .order_by(provider_leads.c.id.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing_id is None:
+                raise RuntimeError(f"Lead conflict found, but existing id is missing for lead_uid={lead_uid}")
     except SQLAlchemyError as exc:
         raise RuntimeError(f"Database write failed: {exc}") from exc
 
-    return int(inserted_id)
+    return int(existing_id), True
 
 
-def get_pending_email_leads(batch_size: int, max_attempts: int) -> list[dict[str, Any]]:
+def requeue_processing_email_leads() -> int:
     stmt = (
-        select(
-            provider_leads.c.id,
-            provider_leads.c.lead_uid,
-            provider_leads.c.site,
-            provider_leads.c.payload,
-            provider_leads.c.received_at,
-            provider_leads.c.email_attempts,
-        )
-        .where(provider_leads.c.email_status == "pending")
-        .where(provider_leads.c.email_attempts < max_attempts)
-        .order_by(provider_leads.c.id.asc())
-        .limit(batch_size)
+        update(provider_leads)
+        .where(provider_leads.c.email_status == "processing")
+        .values(email_status="pending")
     )
     with engine.begin() as connection:
-        rows = connection.execute(stmt).mappings().all()
+        result = connection.execute(stmt)
+    return int(result.rowcount or 0)
+
+
+def claim_pending_email_leads(batch_size: int, max_attempts: int) -> list[dict[str, Any]]:
+    claim_sql = text(
+        """
+        WITH claimed AS (
+            SELECT id
+            FROM provider_leads
+            WHERE email_status = 'pending'
+              AND email_attempts < :max_attempts
+            ORDER BY id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT :batch_size
+        )
+        UPDATE provider_leads AS pl
+        SET email_status = 'processing'
+        FROM claimed
+        WHERE pl.id = claimed.id
+        RETURNING
+            pl.id,
+            pl.lead_uid,
+            pl.site,
+            pl.payload,
+            pl.received_at,
+            pl.email_attempts
+        """
+    )
+    with engine.begin() as connection:
+        rows = connection.execute(
+            claim_sql,
+            {"max_attempts": max_attempts, "batch_size": batch_size},
+        ).mappings().all()
     return [dict(row) for row in rows]
 
 
@@ -114,6 +179,7 @@ def mark_email_sent(lead_id: int) -> None:
     stmt = (
         update(provider_leads)
         .where(provider_leads.c.id == lead_id)
+        .where(provider_leads.c.email_status == "processing")
         .values(
             email_status="sent",
             email_sent_at=func.now(),
@@ -129,6 +195,7 @@ def mark_email_failed(lead_id: int, error_message: str, final: bool) -> None:
     stmt = (
         update(provider_leads)
         .where(provider_leads.c.id == lead_id)
+        .where(provider_leads.c.email_status == "processing")
         .values(
             email_status=next_status,
             email_attempts=provider_leads.c.email_attempts + 1,

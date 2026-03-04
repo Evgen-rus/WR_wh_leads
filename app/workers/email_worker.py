@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import threading
-import time
 
 from app.config import EMAIL_MAX_ATTEMPTS, EMAIL_POLL_INTERVAL_SECONDS, EMAIL_SEND_DELAY_SECONDS
-from app.database import get_pending_email_leads, mark_email_failed, mark_email_sent
+from app.database import (
+    claim_pending_email_leads,
+    mark_email_failed,
+    mark_email_sent,
+    requeue_processing_email_leads,
+)
 from app.services.mailer import send_lead_email
 from app.utils.logging_utils import get_app_logger
 
@@ -19,6 +23,9 @@ def start_email_worker() -> None:
         return
 
     _stop_event.clear()
+    recovered = requeue_processing_email_leads()
+    if recovered:
+        logger.warning("Recovered processing leads after restart: count=%s", recovered)
     _worker_thread = threading.Thread(target=_run_worker, name="email-worker", daemon=True)
     _worker_thread.start()
     logger.info("Email worker started")
@@ -34,7 +41,7 @@ def stop_email_worker() -> None:
 def _run_worker() -> None:
     while not _stop_event.is_set():
         try:
-            leads = get_pending_email_leads(batch_size=20, max_attempts=EMAIL_MAX_ATTEMPTS)
+            leads = claim_pending_email_leads(batch_size=20, max_attempts=EMAIL_MAX_ATTEMPTS)
             if not leads:
                 _stop_event.wait(EMAIL_POLL_INTERVAL_SECONDS)
                 continue

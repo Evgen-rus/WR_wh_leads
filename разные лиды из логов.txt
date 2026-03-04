@@ -1,0 +1,25 @@
+2026-03-04 07:27:01,437 [INFO] {"db_id": 1574, "format": "json", "headers": {"host": "wrmb-wh.webtm.ru", "x-real-ip": "87.242.124.139", "x-forwarded-for": "87.242.124.139", "x-forwarded-proto": "http", "connection": "close", "content-length": "724", "accept": "*/*", "content-type": "application/json"}, "payload": {"ip": "176.49.33.38", "utm": {"yclid": "8515023645910499327", "roistat": "direct", "utm_term": "---autotargeting", "utm_medium": "cpc", "utm_source": "yandex", "utm_content": "t_d6|17620703283|5721682521|205721682521|video.like|context", "utm_campaign": "707545535"}, "vid": "1596002606", "page": "https://real-property-tai.ru/golf-residences-topaz?yclid=8515023645910499327&utm_campaign=707545535&utm_content=t_d6%7C17620703283%7C5721682521%7C205721682521%7Cvideo.like%7Ccontext&utm_source=yandex&utm_medium=cpc&utm_term=---autotargeting&roistat=direct", "site": "real-property-tai.ru", "time": "1772608922", "device": "Mobile Phone", "phones": ["79232878208"], "browser": "Chrome", "comment": null, "platform": "Android"}}
+2026-03-04 07:27:01,456 [INFO] {"db_id": 1575, "format": "json", "headers": {"host": "wrmb-wh.webtm.ru", "x-real-ip": "87.242.124.139", "x-forwarded-for": "87.242.124.139", "x-forwarded-proto": "http", "connection": "close", "content-length": "260", "accept": "*/*", "content-type": "application/json"}, "payload": {"ip": "82.142.155.94", "vid": "1595131707", "page": "https://villa-dubai.estate-dubai.ae/", "site": "villa-dubai.estate-dubai.ae", "time": "1772608683", "device": "Desktop", "phones": ["79142993143"], "browser": "Chrome", "comment": null, "platform": "Win10"}}
+
+Вот как распределяются данные из ваших логов по формату лида. Основная разница в том, что в первом логе данных для заполнения полей гораздо больше, чем во втором.
+Запись №1 (Тайланд) — Полный лид
+В этой записи есть все данные, включая маркетинговые метки:
+Время: 2026-03-04 07:27:01 (из заголовка лога)
+Имя: Гость #1596002606 (на основе vid)
+Телефон: 79232878208
+URL: https://real-property-tai.ru...
+utm_source: yandex
+utm_medium: cpc
+utm_campaign: 707545535
+utm_content: t_d6|17620703283|5721682521|...
+utm_term: ---autotargeting
+yclid: 8515023645910499327
+
+Запись №2 (Дубай) — Частичный лид
+Здесь отсутствует блок UTM-меток, поэтому поля маркетинга останутся пустыми:
+Время: 2026-03-04 07:27:01
+Имя: Гость #1595131707 (на основе vid)
+Телефон: 79142993143
+URL: https://villa-dubai.estate-dubai.ae
+Маркетинговые поля (utm_source, utm_medium и т.д.): НЕТ ДАННЫХ (переход был либо прямым, либо метки не передались).
+Итог: В первой записи есть всё, во второй — только базовая информация (телефон, страница и ID устройства) без истории рекламного перехода
