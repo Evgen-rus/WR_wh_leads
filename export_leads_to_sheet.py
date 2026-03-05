@@ -216,7 +216,7 @@ def _format_identification_time(payload: dict[str, Any], received_at: Any) -> st
 
 
 def _fetch_recent_leads(now_utc: datetime) -> list[LeadRow]:
-    cutoff = now_utc - timedelta(hours=24)
+    cutoff = now_utc - timedelta(hours=72)
     stmt = (
         select(
             provider_leads.c.lead_uid,
@@ -387,7 +387,7 @@ def export_recent_leads_to_google_sheet() -> None:
 
     leads = _fetch_recent_leads(now_utc)
     if not leads:
-        LOGGER.info("За последние 24 часа лидов с lead_uid не найдено.")
+        LOGGER.info("За последние 72 часа лидов с lead_uid не найдено.")
         return
 
     status_updates = []
