@@ -17,7 +17,10 @@ def _require_env(name: str) -> str:
 
 DATABASE_URL = _require_env("DATABASE_URL")
 WEBHOOK_SECRET = _require_env("WEBHOOK_SECRET")
-LOG_PATH = Path(os.getenv("WEBHOOK_LOG_PATH", "logs/provider_webhook.log"))
+WEBHOOK_LOG_PATH = Path(os.getenv("WEBHOOK_LOG_PATH", "logs/provider_webhook.log"))
+EMAIL_WORKER_LOG_PATH = Path(os.getenv("EMAIL_WORKER_LOG_PATH", "logs/email_worker.log"))
+# Backward-compatible alias for older imports.
+LOG_PATH = WEBHOOK_LOG_PATH
 
 # Mail settings
 MAIL_PROVIDER = (os.getenv("MAIL_PROVIDER") or "yandex").strip().lower()

@@ -10,9 +10,9 @@ from app.database import (
     requeue_processing_email_leads,
 )
 from app.services.mailer import send_lead_email
-from app.utils.logging_utils import get_app_logger
+from app.utils.logging_utils import get_email_worker_logger
 
-logger = get_app_logger()
+logger = get_email_worker_logger()
 _stop_event = threading.Event()
 _worker_thread: threading.Thread | None = None
 

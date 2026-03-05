@@ -8,11 +8,11 @@ from fastapi.responses import JSONResponse
 
 from app.config import WEBHOOK_SECRET
 from app.database import save_lead
-from app.utils.logging_utils import get_app_logger
+from app.utils.logging_utils import get_webhook_logger
 from app.utils.request_parser import read_request_payload
 
 router = APIRouter()
-logger = get_app_logger()
+logger = get_webhook_logger()
 
 
 @router.post("/api/provider-test/{secret}")
