@@ -65,5 +65,5 @@ sudo systemctl restart wr_wh_leads
 ## 10) Смотреть только ошибки отправки из лог-файла проекта
 
 ```bash
-cd /opt/WR_wh_leads && rg "Lead email failed|rate limit|4.2.1| 450" logs/provider_webhook.log
+grep -E "Lead email failed|rate limit|4.2.1| 450" logs/provider_webhook.log
 ```
