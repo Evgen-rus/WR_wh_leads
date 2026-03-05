@@ -43,6 +43,7 @@ SMTP_TIMEOUT_SECONDS = int((os.getenv("SMTP_TIMEOUT_SECONDS") or "20").strip())
 EMAIL_SEND_DELAY_SECONDS = int((os.getenv("EMAIL_SEND_DELAY_SECONDS") or "5").strip())
 EMAIL_MAX_ATTEMPTS = int((os.getenv("EMAIL_MAX_ATTEMPTS") or "5").strip())
 EMAIL_POLL_INTERVAL_SECONDS = int((os.getenv("EMAIL_POLL_INTERVAL_SECONDS") or "2").strip())
+LOG_ROTATION_BACKUP_DAYS = int((os.getenv("LOG_ROTATION_BACKUP_DAYS") or "14").strip())
 EMAIL_TIMEZONE_LABEL = (os.getenv("EMAIL_TIMEZONE_LABEL") or "UTC +3").strip()
 CITY_LEADS = (os.getenv("CITY_LEADS") or "Moscow").strip()
 
