@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -9,33 +10,66 @@ from urllib.parse import parse_qs, urlsplit
 from app.config import (
     CITY_LEADS,
     EMAIL_TIMEZONE_LABEL,
+    MAIL_PROVIDER,
     SMTP_PORT,
     SMTP_SERVER,
     SMTP_TIMEOUT_SECONDS,
     TO_EMAIL,
+    UNIS_FROM_EMAIL,
+    UNIS_SMTP_HOST,
+    UNIS_SMTP_PASSWORD,
+    UNIS_SMTP_PORT,
+    UNIS_SMTP_USERNAME,
+    UNIS_TO_EMAIL,
     YANDEX_APP_PASSWORD,
     YANDEX_EMAIL,
 )
 
 
 def send_lead_email(lead: dict[str, Any]) -> None:
-    sender_email = _required_value(YANDEX_EMAIL, "YANDEX_EMAIL")
-    app_password = _required_value(YANDEX_APP_PASSWORD, "YANDEX_APP_PASSWORD")
-    to_email = _required_value(TO_EMAIL, "TO_EMAIL")
+    from_email, smtp_login, smtp_password, to_email = _get_mail_provider_settings()
 
     payload = lead.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {"raw_payload": str(payload)}
 
     message = EmailMessage()
-    message["From"] = sender_email
+    message["From"] = from_email
     message["To"] = to_email
     message["Subject"] = _build_subject(payload)
+    if MAIL_PROVIDER == "unisender":
+        message["X-UNISENDER-GO"] = json.dumps({"track_links": 0}, ensure_ascii=True)
     message.set_content(_build_message_body(payload=payload, received_at=lead.get("received_at")))
 
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
-        smtp.login(sender_email, app_password)
+    if MAIL_PROVIDER == "yandex":
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+            smtp.login(smtp_login, smtp_password)
+            smtp.send_message(message)
+        return
+
+    with smtplib.SMTP(UNIS_SMTP_HOST, UNIS_SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.ehlo()
+        smtp.login(smtp_login, smtp_password)
         smtp.send_message(message)
+
+
+def _get_mail_provider_settings() -> tuple[str, str, str, str]:
+    if MAIL_PROVIDER == "yandex":
+        from_email = _required_value(YANDEX_EMAIL, "YANDEX_EMAIL")
+        app_password = _required_value(YANDEX_APP_PASSWORD, "YANDEX_APP_PASSWORD")
+        to_email = _required_value(TO_EMAIL, "TO_EMAIL")
+        return from_email, from_email, app_password, to_email
+
+    if MAIL_PROVIDER == "unisender":
+        smtp_username = _required_value(UNIS_SMTP_USERNAME, "UNIS_SMTP_USERNAME")
+        smtp_password = _required_value(UNIS_SMTP_PASSWORD, "UNIS_SMTP_PASSWORD")
+        from_email = _required_value(UNIS_FROM_EMAIL, "UNIS_FROM_EMAIL")
+        to_email = _required_value(UNIS_TO_EMAIL, "UNIS_TO_EMAIL")
+        return from_email, smtp_username, smtp_password, to_email
+
+    raise RuntimeError("MAIL_PROVIDER must be either 'yandex' or 'unisender'")
 
 
 def _required_value(value: str, env_name: str) -> str:
