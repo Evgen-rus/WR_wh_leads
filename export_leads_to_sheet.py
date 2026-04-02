@@ -50,6 +50,7 @@ MONTH_NAMES_RU = {
     12: "Декабрь",
 }
 LOGGER = logging.getLogger("export_leads_to_sheet")
+MSK_TZ = timezone(timedelta(hours=3))
 
 
 @dataclass
@@ -57,6 +58,12 @@ class LeadRow:
     lead_uid: str
     row_values: list[str]
     email_status: str
+
+
+@dataclass(frozen=True)
+class SheetRowRef:
+    sheet_title: str
+    row_number: int
 
 
 def _configure_logger() -> None:
@@ -157,10 +164,20 @@ def _build_sheets_service():
     return build("sheets", "v4", credentials=credentials)
 
 
+def _sheet_title_for_datetime(dt: datetime) -> str:
+    msk_dt = dt.astimezone(MSK_TZ)
+    month_name = MONTH_NAMES_RU[msk_dt.month]
+    return f"{month_name} {msk_dt.year}"
+
+
 def _current_sheet_title(now_utc: datetime) -> str:
-    msk_now = now_utc.astimezone(timezone(timedelta(hours=3)))
-    month_name = MONTH_NAMES_RU[msk_now.month]
-    return f"{month_name} {msk_now.year}"
+    return _sheet_title_for_datetime(now_utc)
+
+
+def _previous_sheet_title(now_utc: datetime) -> str:
+    current_month_start = now_utc.astimezone(MSK_TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    previous_month_dt = current_month_start - timedelta(days=1)
+    return _sheet_title_for_datetime(previous_month_dt)
 
 
 def _extract_uid_from_name(name_cell: str) -> str:
@@ -205,18 +222,18 @@ def _format_identification_time(payload: dict[str, Any], received_at: Any) -> st
     if source_time is not None:
         try:
             parsed = datetime.fromtimestamp(int(str(source_time)), tz=timezone.utc)
-            return parsed.astimezone(timezone(timedelta(hours=3))).replace(tzinfo=None).isoformat(sep=" ")
+            return parsed.astimezone(MSK_TZ).replace(tzinfo=None).isoformat(sep=" ")
         except (TypeError, ValueError, OverflowError):
             pass
     if isinstance(received_at, datetime):
         if received_at.tzinfo is None:
             return received_at.isoformat(sep=" ")
-        return received_at.astimezone(timezone(timedelta(hours=3))).replace(tzinfo=None).isoformat(sep=" ")
+        return received_at.astimezone(MSK_TZ).replace(tzinfo=None).isoformat(sep=" ")
     return datetime.now().isoformat(sep=" ")
 
 
-def _fetch_recent_leads(now_utc: datetime) -> list[LeadRow]:
-    cutoff = now_utc - timedelta(hours=72)
+def _fetch_recent_leads(now_utc: datetime, lookback_hours: int) -> list[LeadRow]:
+    cutoff = now_utc - timedelta(hours=lookback_hours)
     stmt = (
         select(
             provider_leads.c.lead_uid,
@@ -315,6 +332,19 @@ def _ensure_sheet(service, spreadsheet_id: str, sheet_title: str) -> tuple[int, 
     return sheet_id, 1001
 
 
+def _sheet_exists(service, spreadsheet_id: str, sheet_title: str) -> bool:
+    spreadsheet = _retry_google_call(
+        "spreadsheets.get.sheet_exists",
+        service.spreadsheets().get,
+        spreadsheetId=spreadsheet_id,
+    )
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_title:
+            return True
+    return False
+
+
 def _read_existing_uid_map(service, spreadsheet_id: str, sheet_title: str) -> tuple[dict[str, int], int]:
     result = _retry_google_call(
         "spreadsheets.values.batchGet.uid_map",
@@ -375,30 +405,62 @@ def export_recent_leads_to_google_sheet() -> None:
     load_dotenv()
     _configure_logger()
 
+    try:
+        lookback_hours = int((os.getenv("EXPORT_LEADS_LOOKBACK_HOURS") or "48").strip())
+    except ValueError:
+        lookback_hours = 48
+    if lookback_hours <= 0:
+        lookback_hours = 48
+
     started = time.monotonic()
     spreadsheet_id = _required_env("GOOGLE_SHEET_ID")
     now_utc = datetime.now(timezone.utc)
     sheet_title = _current_sheet_title(now_utc)
-    LOGGER.info("Старт выгрузки: spreadsheet_id=%s sheet_title=%s", spreadsheet_id, sheet_title)
+    previous_sheet_title = _previous_sheet_title(now_utc)
+    LOGGER.info(
+        "Старт выгрузки: spreadsheet_id=%s sheet_title=%s lookback_hours=%s",
+        spreadsheet_id,
+        sheet_title,
+        lookback_hours,
+    )
 
     service = _build_sheets_service()
     sheet_id, row_count = _ensure_sheet(service, spreadsheet_id, sheet_title)
     existing_uid_map, last_row = _read_existing_uid_map(service, spreadsheet_id, sheet_title)
+    existing_uid_refs = {
+        lead_uid: SheetRowRef(sheet_title=sheet_title, row_number=row_number)
+        for lead_uid, row_number in existing_uid_map.items()
+    }
 
-    leads = _fetch_recent_leads(now_utc)
+    if previous_sheet_title != sheet_title and _sheet_exists(service, spreadsheet_id, previous_sheet_title):
+        previous_uid_map, _ = _read_existing_uid_map(service, spreadsheet_id, previous_sheet_title)
+        for lead_uid, row_number in previous_uid_map.items():
+            existing_uid_refs.setdefault(
+                lead_uid,
+                SheetRowRef(sheet_title=previous_sheet_title, row_number=row_number),
+            )
+        LOGGER.info(
+            "Подключен предыдущий лист для дедупликации: title=%s known_uids=%s",
+            previous_sheet_title,
+            len(previous_uid_map),
+        )
+    else:
+        LOGGER.info("Предыдущий лист для дедупликации не найден: title=%s", previous_sheet_title)
+
+    leads = _fetch_recent_leads(now_utc, lookback_hours)
     if not leads:
-        LOGGER.info("За последние 72 часа лидов с lead_uid не найдено.")
+        LOGGER.info("За последние %s ч. лидов с lead_uid не найдено.", lookback_hours)
         return
 
     status_updates = []
     append_rows = []
     append_count = 0
     for lead in leads:
-        row_number = existing_uid_map.get(lead.lead_uid)
-        if row_number:
+        row_ref = existing_uid_refs.get(lead.lead_uid)
+        if row_ref:
             status_updates.append(
                 {
-                    "range": f"'{sheet_title}'!M{row_number}",
+                    "range": f"'{row_ref.sheet_title}'!M{row_ref.row_number}",
                     "values": [[lead.email_status]],
                 }
             )
@@ -406,7 +468,10 @@ def export_recent_leads_to_google_sheet() -> None:
 
         append_rows.append(lead.row_values)
         append_count += 1
-        existing_uid_map[lead.lead_uid] = last_row + append_count
+        existing_uid_refs[lead.lead_uid] = SheetRowRef(
+            sheet_title=sheet_title,
+            row_number=last_row + append_count,
+        )
 
     if status_updates:
         _retry_google_call(
